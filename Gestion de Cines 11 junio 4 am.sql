@@ -229,125 +229,100 @@ GROUP BY P.titulo, G.nombre_genero;
 -- 6. PROCEDIMIENTOS (P1, P2, P3, P4)
 -- ============================================================
 
-CREATE OR REPLACE PROCEDURE sp_resumen_periodo(p_inicio DATE, p_fin DATE) AS
-    v_total NUMBER;
-    v_monto NUMBER;
-    v_promedio NUMBER;
+CREATE OR REPLACE PROCEDURE sp_resumen_periodo(
+    p_inicio DATE,
+    p_fin    DATE
+) AS
+    v_total   NUMBER := 0;
+    v_monto   NUMBER := 0;
+    v_error   VARCHAR2(500);
 BEGIN
-    SELECT COUNT(*), NVL(SUM(monto_pagado),0), NVL(AVG(monto_pagado),0)
-    INTO v_total, v_monto, v_promedio
-    FROM BOLETOS WHERE fecha_emision BETWEEN p_inicio AND p_fin;
-    
-    DBMS_OUTPUT.PUT_LINE('=== RESUMEN DEL PERÍODO ===');
-    DBMS_OUTPUT.PUT_LINE('Período: ' || TO_CHAR(p_inicio,'DD/MM/YYYY') || ' al ' || TO_CHAR(p_fin,'DD/MM/YYYY'));
-    DBMS_OUTPUT.PUT_LINE('Total boletos: ' || v_total);
-    DBMS_OUTPUT.PUT_LINE('Monto total: $' || ROUND(v_monto,2));
-    DBMS_OUTPUT.PUT_LINE('Promedio: $' || ROUND(v_promedio,2));
-    COMMIT;
+    IF p_inicio > p_fin THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Fecha inicio mayor a fin');
+    END IF;
+
+    SELECT COUNT(*), NVL(SUM(monto_pagado),0)
+    INTO v_total, v_monto
+    FROM BOLETOS
+    WHERE fecha_emision BETWEEN p_inicio AND p_fin;
+
+    DBMS_OUTPUT.PUT_LINE('Total Boletos: ' || v_total || ' | Monto: $' || v_monto);
+
 EXCEPTION
     WHEN OTHERS THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRORES(procedimiento, mensaje_error, usuario_oracle)
-        VALUES('sp_resumen_periodo', SQLERRM, USER);
+        v_error := SQLERRM;
+        INSERT INTO LOG_ERRORES (procedimiento, mensaje_error, usuario_oracle)
+        VALUES ('sp_resumen_periodo', v_error, USER);
         COMMIT;
-        RAISE;
 END;
 /
 
-CREATE OR REPLACE PROCEDURE sp_top_elementos(p_n NUMBER) AS
+CREATE OR REPLACE PROCEDURE sp_top_elementos(
+    p_n NUMBER
+) AS
     CURSOR cur_top IS
-        SELECT P.titulo, COUNT(B.id_boleto) AS total_boletos, SUM(B.monto_pagado) AS ingresos
+        SELECT P.titulo, SUM(B.monto_pagado) AS ingresos
         FROM BOLETOS B
         INNER JOIN HORARIOS H ON B.id_horario = H.id_horario
         INNER JOIN PELICULAS P ON H.id_pelicula = P.id_pelicula
         GROUP BY P.titulo
-        ORDER BY SUM(B.monto_pagado) DESC
-        FETCH FIRST p_n ROWS ONLY;
-    v_rank NUMBER := 1;
+        ORDER BY SUM(B.monto_pagado) DESC;
+
+    v_rank  NUMBER := 1;
+    v_error VARCHAR2(500);
 BEGIN
-    DBMS_OUTPUT.PUT_LINE('=== TOP ' || p_n || ' PELÍCULAS MÁS TAQUILLERAS ===');
+    DBMS_OUTPUT.PUT_LINE('=== TOP PELÍCULAS ===');
+
     FOR rec IN cur_top LOOP
-        DBMS_OUTPUT.PUT_LINE(v_rank || '. ' || rec.titulo || ' | Boletos: ' || rec.total_boletos || ' | $' || ROUND(rec.ingresos,2));
+        EXIT WHEN v_rank > p_n;
+        DBMS_OUTPUT.PUT_LINE(v_rank || '. ' || rec.titulo || ' | $' || rec.ingresos);
         v_rank := v_rank + 1;
     END LOOP;
-    COMMIT;
+
 EXCEPTION
     WHEN OTHERS THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRORES(procedimiento, mensaje_error, usuario_oracle)
-        VALUES('sp_top_elementos', SQLERRM, USER);
+        v_error := SQLERRM;
+        INSERT INTO LOG_ERRORES (procedimiento, mensaje_error, usuario_oracle)
+        VALUES ('sp_top_elementos', v_error, USER);
         COMMIT;
-        RAISE;
 END;
 /
 
 CREATE OR REPLACE PROCEDURE sp_indicadores_categoria AS
-    v_variacion NUMBER;
+    v_error VARCHAR2(500);
 BEGIN
-    DBMS_OUTPUT.PUT_LINE('=== INDICADORES POR GÉNERO ===');
     FOR rec IN (
-        SELECT G.nombre_genero,
-               SUM(CASE WHEN EXTRACT(MONTH FROM B.fecha_emision) = EXTRACT(MONTH FROM SYSDATE) THEN B.monto_pagado ELSE 0 END) AS mes_actual,
-               SUM(CASE WHEN EXTRACT(MONTH FROM B.fecha_emision) = EXTRACT(MONTH FROM ADD_MONTHS(SYSDATE,-1)) THEN B.monto_pagado ELSE 0 END) AS mes_anterior
+        SELECT G.nombre_genero, SUM(B.monto_pagado) AS venta
         FROM BOLETOS B
-        INNER JOIN HORARIOS H ON B.id_horario = H.id_horario
-        INNER JOIN PELICULAS P ON H.id_pelicula = P.id_pelicula
-        INNER JOIN GENEROS G ON P.id_genero = G.id_genero
+        JOIN HORARIOS H ON B.id_horario = H.id_horario
+        JOIN PELICULAS P ON H.id_pelicula = P.id_pelicula
+        JOIN GENEROS G ON P.id_genero = G.id_genero
         GROUP BY G.nombre_genero
     ) LOOP
-        IF rec.mes_anterior > 0 THEN
-            v_variacion := ROUND(((rec.mes_actual - rec.mes_anterior) / rec.mes_anterior) * 100, 2);
-        ELSE
-            v_variacion := 0;
-        END IF;
-        DBMS_OUTPUT.PUT_LINE(rec.nombre_genero || ' | Mes actual: $' || NVL(ROUND(rec.mes_actual,2),0) || 
-                             ' | Mes anterior: $' || NVL(ROUND(rec.mes_anterior,2),0) || ' | Variación: ' || v_variacion || '%');
+        DBMS_OUTPUT.PUT_LINE('Género: ' || rec.nombre_genero || ' | Venta Total: $' || rec.venta);
     END LOOP;
-    COMMIT;
 EXCEPTION
     WHEN OTHERS THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRORES(procedimiento, mensaje_error, usuario_oracle)
-        VALUES('sp_indicadores_categoria', SQLERRM, USER);
+        v_error := SQLERRM;
+        INSERT INTO LOG_ERRORES (procedimiento, mensaje_error, usuario_oracle)
+        VALUES ('sp_indicadores_categoria', v_error, USER);
         COMMIT;
-        RAISE;
 END;
 /
 
 CREATE OR REPLACE PROCEDURE sp_alertas_negocio AS
+    v_error VARCHAR2(500);
 BEGIN
-    DBMS_OUTPUT.PUT_LINE('=== ALERTAS OPERATIVAS ===');
-    DBMS_OUTPUT.PUT_LINE('-- Funciones sin ventas próximas 24h:');
-    FOR rec IN (
-        SELECT P.titulo, S.nombre_sala, H.fecha_hora
-        FROM HORARIOS H
-        INNER JOIN PELICULAS P ON H.id_pelicula = P.id_pelicula
-        INNER JOIN SALAS S ON H.id_sala = S.id_sala
-        WHERE H.fecha_hora BETWEEN SYSDATE AND SYSDATE + 1
-          AND H.estado = 'PROGRAMADA'
-          AND NOT EXISTS (SELECT 1 FROM BOLETOS B WHERE B.id_horario = H.id_horario)
-    ) LOOP
-        DBMS_OUTPUT.PUT_LINE(' > ' || rec.titulo || ' - ' || rec.nombre_sala || ' - ' || TO_CHAR(rec.fecha_hora,'DD/MM HH24:MI'));
+    DBMS_OUTPUT.PUT_LINE('=== ALERTAS DEL NEGOCIO ===');
+    FOR rec IN (SELECT nombre_sala FROM SALAS WHERE estado = 'MANTENIMIENTO') LOOP
+        DBMS_OUTPUT.PUT_LINE('ALERTA: ' || rec.nombre_sala || ' fuera de servicio.');
     END LOOP;
-    
-    DBMS_OUTPUT.PUT_LINE('-- Salas en mantenimiento con funciones:');
-    FOR rec IN (
-        SELECT S.nombre_sala, COUNT(H.id_horario) AS funciones_afectadas
-        FROM SALAS S
-        INNER JOIN HORARIOS H ON S.id_sala = H.id_sala
-        WHERE S.estado = 'MANTENIMIENTO' AND H.estado = 'PROGRAMADA'
-        GROUP BY S.nombre_sala
-    ) LOOP
-        DBMS_OUTPUT.PUT_LINE(' > ' || rec.nombre_sala || ' tiene ' || rec.funciones_afectadas || ' función(es) en conflicto.');
-    END LOOP;
-    COMMIT;
 EXCEPTION
     WHEN OTHERS THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRORES(procedimiento, mensaje_error, usuario_oracle)
-        VALUES('sp_alertas_negocio', SQLERRM, USER);
+        v_error := SQLERRM;
+        INSERT INTO LOG_ERRORES (procedimiento, mensaje_error, usuario_oracle)
+        VALUES ('sp_alertas_negocio', v_error, USER);
         COMMIT;
-        RAISE;
 END;
 /
 
